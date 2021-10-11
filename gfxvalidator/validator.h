@@ -21,11 +21,14 @@ enum GFXValidatorError {
     GFXValidatorInvalidAddress,
     GFXValidatorInvalidArguments,
     GFXValidatorUnitialized,
+    GFXValidatorErrorCount,
 };
 
 struct GFXValidationResult {
     Gfx* gfxStack[GFX_MAX_GFX_STACK];
     char gfxStackSize;
+    enum GFXValidatorError reason;
+    unsigned reasonParam0;
 };
 
 struct GFXValidatorState {
@@ -35,7 +38,7 @@ struct GFXValidatorState {
     int flags;
 };
 
-typedef enum GFXValidatorError (*CommandValidator)(struct GFXValidatorState* state, Gfx* at);
+typedef void (*gfxPrinter)(char* output, unsigned outputLength);
 
 enum GFXValidatorError gfxValidate(OSTask* task, int maxGfxCount, struct GFXValidationResult* result);
 

@@ -1,7 +1,10 @@
 
 #include "validator.h"
+#include <string.h>
 
 #define MAX_COMMAND_LEN     256
+
+typedef enum GFXValidatorError (*CommandValidator)(struct GFXValidatorState* state, Gfx* at);
 
 extern CommandValidator gfxCommandValidators[MAX_COMMAND_LEN];
 
@@ -39,6 +42,7 @@ void gfxInitState(struct GFXValidatorState* state, struct GFXValidationResult* r
 
     state->matrixStackSize = 0;
     state->result->gfxStackSize = 0;
+    state->result->reason = GFXValidatorErrorNone;
     state->flags = 0;
 }
 
@@ -85,82 +89,6 @@ enum GFXValidatorError gfxValidateAddress(struct GFXValidatorState* state, int a
 
     if (!gfxIsInRam(translated)) {
         return GFXValidatorInvalidAddress;
-    }
-
-    return GFXValidatorErrorNone;
-}
-
-enum GFXValidatorError gfxValidateList(struct GFXValidatorState* state, Gfx* gfx, Gfx* segmentGfx) {
-    enum GFXValidatorError result = gfxPush(state, segmentGfx);
-
-    if (result != GFXValidatorErrorNone) {
-        return result;
-    }
-
-    int active = 1;
-
-    while (active) {
-        int commandType = _SHIFTR(gfx->words.w0, 24, 8);
-
-        if (commandType < 0 || commandType >= MAX_COMMAND_LEN) {
-            return GFXValidatorInvalidCommand;
-        }
-
-        CommandValidator validator = gfxCommandValidators[commandType];
-
-        if (!validator) {
-            return GFXValidatorInvalidCommand;
-        }
-
-        result = validator(state, gfx);
-
-        if (result != GFXValidatorErrorNone) {
-            return result;
-        }
-
-        switch (commandType) {
-            case (u8)G_ENDDL:
-                active = 0;
-                break;
-            case (u8)G_DL:
-                {
-                    int next;
-                    result = gfxTranslateAddress(state, gfx->dma.addr, &next);
-
-                    if (result != GFXValidatorErrorNone) {
-                        return result;
-                    }
-
-                    next = PHYS_TO_K0(next);
-
-                    if (gfx->dma.par == G_DL_NOPUSH) {
-                        gfx = (Gfx*)next;
-                    } else {
-                        gfxValidateList(state, (Gfx*)next, (Gfx*)gfx->dma.addr);
-                        ++gfx;
-                    }
-                }
-                break;
-            default:
-                ++gfx;
-                break;
-        };
-    }
-
-    gfxPop(state);
-    return GFXValidatorErrorNone;
-}
-
-enum GFXValidatorError gfxValidate(OSTask* task, int maxGfxCount, struct GFXValidationResult* validateResult) {
-    struct GFXValidatorState state;
-    gfxInitState(&state, validateResult);
-    
-    if (task->t.type == M_GFXTASK) {
-        enum GFXValidatorError result = gfxValidateList(&state, (Gfx*)task->t.data_ptr, (Gfx*)task->t.data_ptr);
-        
-        if (result != GFXValidatorErrorNone) {
-            return result;
-        }
     }
 
     return GFXValidatorErrorNone;
@@ -307,6 +235,10 @@ enum GFXValidatorError gfxValidateTri1(struct GFXValidatorState* state, Gfx* at)
     }
 }
 
+enum GFXValidatorError gfxValidateTri2(struct GFXValidatorState* state, Gfx* at) {
+    return GFXValidatorErrorNone;
+}
+
 enum GFXValidatorError gfxValidateCullDL(struct GFXValidatorState* state, Gfx* at) {
     // TODO handle G_SPRITE2D_SCALEFLIP in sprite mode
     u8 v0 = at->words.w0 & 0xFFFFFF;
@@ -372,6 +304,83 @@ enum GFXValidatorError gfxValidateTODO(struct GFXValidatorState* state, Gfx* at)
     return GFXValidatorErrorNone;
 }
 
+enum GFXValidatorError gfxValidateList(struct GFXValidatorState* state, Gfx* gfx, Gfx* segmentGfx) {
+    enum GFXValidatorError result = gfxPush(state, segmentGfx);
+
+    if (result != GFXValidatorErrorNone) {
+        return result;
+    }
+
+    int active = 1;
+
+    while (active) {
+        int commandType = _SHIFTR(gfx->words.w0, 24, 8);
+
+        if (commandType < 0 || commandType >= MAX_COMMAND_LEN) {
+            return GFXValidatorInvalidCommand;
+        }
+
+        CommandValidator validator = gfxCommandValidators[commandType];
+
+        if (!validator) {
+            return GFXValidatorInvalidCommand;
+        }
+
+        result = validator(state, gfx);
+
+        if (result != GFXValidatorErrorNone) {
+            return result;
+        }
+
+        switch (commandType) {
+            case (u8)G_ENDDL:
+                active = 0;
+                break;
+            case (u8)G_DL:
+                {
+                    int next;
+                    result = gfxTranslateAddress(state, gfx->dma.addr, &next);
+
+                    if (result != GFXValidatorErrorNone) {
+                        return result;
+                    }
+
+                    next = PHYS_TO_K0(next);
+
+                    if (gfx->dma.par == G_DL_NOPUSH) {
+                        gfx = (Gfx*)next;
+                    } else {
+                        gfxValidateList(state, (Gfx*)next, (Gfx*)gfx->dma.addr);
+                        ++gfx;
+                    }
+                }
+                break;
+            default:
+                ++gfx;
+                break;
+        };
+    }
+
+    gfxPop(state);
+    return GFXValidatorErrorNone;
+}
+
+enum GFXValidatorError gfxValidate(OSTask* task, int maxGfxCount, struct GFXValidationResult* validateResult) {
+    struct GFXValidatorState state;
+    gfxInitState(&state, validateResult);
+    
+    if (task->t.type == M_GFXTASK) {
+        enum GFXValidatorError result = gfxValidateList(&state, (Gfx*)task->t.data_ptr, (Gfx*)task->t.data_ptr);
+        
+        if (result != GFXValidatorErrorNone) {
+            validateResult->reason = result;
+            return result;
+        }
+    }
+
+    return GFXValidatorErrorNone;
+}
+
 CommandValidator gfxCommandValidators[MAX_COMMAND_LEN] = {
     [G_SPNOOP] = gfxValidateNoop,
     [G_MTX] = gfxValidateMtx,
@@ -381,20 +390,32 @@ CommandValidator gfxCommandValidators[MAX_COMMAND_LEN] = {
     [G_SPRITE2D_BASE] = gfxValidateSprite2DBase,
 
     [(u8)G_TRI1] = gfxValidateTri1,
+#ifdef G_TRI2
+    [(u8)G_TRI2] = gfxValidateTri2,
+#endif
     [(u8)G_CULLDL] = gfxValidateCullDL,
     [(u8)G_POPMTX] = gfxValidatePopMtx,
     [(u8)G_MOVEWORD] = gfxValidateMoveWord,
 
+    [(u8)G_MODIFYVTX] = gfxValidateTODO,
+    [(u8)G_BRANCH_Z] = gfxValidateTODO;
+    [(u8)G_QUAD] = gfxValidateTODO;
+    [(u8)G_SPECIAL_1] = gfxValidateTODO;
+    [(u8)G_SPECIAL_2] = gfxValidateTODO;
+    [(u8)G_SPECIAL_3] = gfxValidateTODO;
+    [(u8)G_DMA_IO] = gfxValidateTODO;
     [(u8)G_TEXTURE] = gfxValidateTODO,
     [(u8)G_SETOTHERMODE_H] = gfxValidateTODO,
     [(u8)G_SETOTHERMODE_L] = gfxValidateTODO,
     [(u8)G_ENDDL] = gfxValidateTODO,
+    [(u8)G_GEOMETRYMODE] = gfxValidateTODO;
     [(u8)G_SETGEOMETRYMODE] = gfxValidateTODO,
     [(u8)G_CLEARGEOMETRYMODE] = gfxValidateTODO,
     [(u8)G_LINE3D] = gfxValidateTODO,
     [(u8)G_RDPHALF_1] = gfxValidateTODO,
     [(u8)G_RDPHALF_2] = gfxValidateTODO,
     [(u8)G_RDPHALF_CONT] = gfxValidateTODO,
+    [(u8)G_LOAD_UCODE] = gfxValidateMoveWord,
 
     [(u8)G_NOOP] = gfxValidateTODO,
 
