@@ -21,6 +21,10 @@ extern CommandValidator gfxCommandValidators[GFX_MAX_COMMAND_LEN];
 #define MOVE_WORD_IDX(gfx)  _SHIFTR((gfx)->words.w0, 16, 8)
 #define MOVE_WORD_OFS(gfx)  _SHIFTR((gfx)->words.w0, 0, 16)
 #define MOVE_WORD_DATA(gfx) ((gfx)->words.w1)
+
+#define VERTEX_BUFFER_SIZE  32
+#define MAX_VERTEX_VALUE    (VERTEX_BUFFER_SIZE * 2)
+
 #else
 #define DMA_MM_LEN(gfx)     DMA1_LEN(gfx)
 #define DMA_MM_OFS(gfx)     0
@@ -31,6 +35,10 @@ extern CommandValidator gfxCommandValidators[GFX_MAX_COMMAND_LEN];
 #define MOVE_WORD_IDX(gfx)  _SHIFTR((gfx)->words.w0, 0, 8)
 #define MOVE_WORD_OFS(gfx)  _SHIFTR((gfx)->words.w0, 8, 16)
 #define MOVE_WORD_DATA(gfx) ((gfx)->words.w1)
+
+#define VERTEX_BUFFER_SIZE  16
+#define MAX_VERTEX_VALUE    (VERTEX_BUFFER_SIZE * 10)
+
 #endif
 
 void gfxInitState(struct GFXValidatorState* state, struct GFXValidationResult* result) {
@@ -45,11 +53,14 @@ void gfxInitState(struct GFXValidatorState* state, struct GFXValidationResult* r
     state->matrixStackSize = 0;
     state->result->gfxStackSize = 0;
     state->result->reason = GFXValidatorErrorNone;
+    state->result->reasonMessage[0] = 0;
     state->flags = 0;
+
 }
 
 enum GFXValidatorError gfxPush(struct GFXValidatorState* state, Gfx* next) {
     if (state->result->gfxStackSize == GFX_MAX_GFX_STACK) {
+        sprintf(state->result->reasonMessage, "display list stack overflow");
         return GFXValidatorStackOverflow;
     } else {
         state->result->gfxStack[(int)state->result->gfxStackSize++] = next;
@@ -66,21 +77,19 @@ int gfxIsAligned(int addr, int to) {
 }
 
 int gfxIsInRam(int addr) {
+    addr = addr & 0xFFFFFFF;
     return addr > 0 && addr < osMemSize;
 }
 
 int gfxIsValidSegmentAddress(int addr) {
-    if ((addr & 0xFF000000) == 0x80000000) {
-        return gfxIsInRam(addr & 0xFFFFFF) || addr == 0;
-    } else {
-        return gfxIsInRam(addr) || addr == 0;
-    }
+    return gfxIsInRam(addr) || addr == 0;
 }
 
 enum GFXValidatorError gfxTranslateAddress(struct GFXValidatorState* state, int address, int* output) {
     int segment = _SHIFTR(address, 24, 4);
 
     if (segment < 0 || segment >= 16 || state->segments[segment] == SEGMENT_UNINITIALIZED) {
+        sprintf(state->result->reasonMessage, "attempt to use segment 0x%x before it was initialized", segment);
         return GFXValidatorSegmentError;
     } else {
         *output = state->segments[segment] + (address & 0xFFFFFF);
@@ -98,10 +107,12 @@ enum GFXValidatorError gfxValidateAddress(struct GFXValidatorState* state, int a
     }
 
     if (!gfxIsAligned(translated, alignedTo)) {
+        sprintf(state->result->reasonMessage, "address 0x%08x must to aligned to %d bytes", address, alignedTo);
         return GFXValidatorDataAlignment;
     }
 
     if (!gfxIsInRam(translated)) {
+        sprintf(state->result->reasonMessage, "address 0x%08x translates to 0x%08x which isn't in RAM", address, translated);
         return GFXValidatorInvalidAddress;
     }
 
@@ -110,6 +121,7 @@ enum GFXValidatorError gfxValidateAddress(struct GFXValidatorState* state, int a
 
 enum GFXValidatorError gfxValidateNoop(struct GFXValidatorState* state, Gfx* at) {
     if (at->dma.addr != 0 || at->dma.len != 0 || at->dma.par != 0) {
+        sprintf(state->result->reasonMessage, "nop instruction should equal 0");
         return GFXValidatorInvalidArguments;
     } else {
         return GFXValidatorErrorNone;
@@ -124,23 +136,29 @@ enum GFXValidatorError gfxValidateMtx(struct GFXValidatorState* state, Gfx* at) 
 #endif
 
     if (DMA_MM_LEN(at) != DMA_MM_EXPECTED_SIZE(sizeof(Mtx))) {
+        sprintf(state->result->reasonMessage, "malformed matrix operation");
         return GFXValidatorInvalidArguments;
     } else if (flags < 0 || flags > (G_MTX_PROJECTION | G_MTX_LOAD | G_MTX_PUSH)) {
+        sprintf(state->result->reasonMessage, "invalid matrix flags");
         return GFXValidatorInvalidArguments;
     } else if ((flags & G_MTX_PUSH) && state->matrixStackSize == GFX_MAX_MATRIX_STACK) {
+        sprintf(state->result->reasonMessage, "matrix stack overflow");
         return GFXValidatorStackOverflow;
     } else if ((flags & G_MTX_PUSH) && (flags & G_MTX_PROJECTION)) {
+        sprintf(state->result->reasonMessage, "cannot push a G_MTX_PROJECTION matrix");
         return GFXValidatorInvalidArguments;
     } else {
         if (!(flags & G_MTX_LOAD)) {
             if (flags & G_MTX_PROJECTION) {
-               if (!(state->flags & GFX_INITIALIZED_PMTX)) {
-                   return GFXValidatorUnitialized;
-               }
+                if (!(state->flags & GFX_INITIALIZED_PMTX)) {
+                    sprintf(state->result->reasonMessage, "cannot multiply, no existing matrix exists");
+                    return GFXValidatorUnitialized;
+                }
             } else {
-               if (!(state->flags & GFX_INITIALIZED_MMTX)) {
-                   return GFXValidatorUnitialized;
-               }
+                if (!(state->flags & GFX_INITIALIZED_MMTX)) {
+                    sprintf(state->result->reasonMessage, "cannot multiply, no existing matrix exists");
+                    return GFXValidatorUnitialized;
+                }
             }
         }
 
@@ -220,10 +238,12 @@ enum GFXValidatorError gfxValidateMoveMem(struct GFXValidatorState* state, Gfx* 
             break;
 #endif
         default:
+            sprintf(state->result->reasonMessage, "unrecognized copy target");
             return GFXValidatorInvalidArguments;
     }
 
     if (expectedLen != DMA_MM_LEN(at)) {
+        sprintf(state->result->reasonMessage, "malformed copy size");
         return GFXValidatorInvalidArguments;
     }
     
@@ -231,23 +251,36 @@ enum GFXValidatorError gfxValidateMoveMem(struct GFXValidatorState* state, Gfx* 
 }
 
 enum GFXValidatorError gfxValidateVertex(struct GFXValidatorState* state, Gfx* at) {
+    int vtxCount;
+    int v0;
 #ifdef F3DEX_GBI_2
-
+    vtxCount = _SHIFTR(at->words.w0, 12, 8);
+    v0 = _SHIFTR(at->words.w0, 1, 7) - vtxCount;
 #else
-    int vtxCount = (DMA1_PARAM(at) >> 4) + 1;
+    vtxCount = (DMA1_PARAM(at) >> 4) + 1;
+    v0 = DMA1_PARAM(at) & 0xF;
 
     if (vtxCount * sizeof(Vtx) != DMA1_LEN(at)) {
+        sprintf(state->result->reasonMessage, "malformed copy size");
         return GFXValidatorInvalidArguments;
     }
 #endif
+
+    if (v0 + vtxCount > VERTEX_BUFFER_SIZE) {
+        sprintf(state->result->reasonMessage, "vertex buffer overflow v0: %d n: %d", v0, vtxCount);
+        return GFXValidatorInvalidArguments;
+    }
+
     return gfxValidateAddress(state, at->dma.addr, 8);
 }
 
 
 enum GFXValidatorError gfxValidateDL(struct GFXValidatorState* state, Gfx* at) {
     if (DMA1_LEN(at) != 0) {
+        sprintf(state->result->reasonMessage, "malformed length");
         return GFXValidatorInvalidArguments;
     } else if (DMA1_PARAM(at) != (DMA1_PARAM(at) & (G_DL_NOPUSH | G_DL_PUSH))) {
+        sprintf(state->result->reasonMessage, "malformed flags");
         return GFXValidatorInvalidArguments;
     } else {
         return gfxValidateAddress(state, at->dma.addr, 8);
@@ -263,33 +296,62 @@ enum GFXValidatorError gfxValidateSprite2DBase(struct GFXValidatorState* state, 
     }
 }
 
-enum GFXValidatorError gfxValidateTri1(struct GFXValidatorState* state, Gfx* at) {
-    u8 v0 = _SHIFTR(at->words.w1, 16, 8);
-    u8 v1 = _SHIFTR(at->words.w1, 8, 8);
-    u8 v2 = _SHIFTR(at->words.w1, 0, 8);
-    u8 flag = _SHIFTR(at->words.w1, 24, 8);
-
-    if (v0 > 150 || v1 > 150 || v2 > 150 || flag > 3) {
+enum GFXValidatorError gfxCheckTriangle(struct GFXValidatorState* state, int v0, int v1, int v2) {
+    if (v0 >= MAX_VERTEX_VALUE || v1 >= MAX_VERTEX_VALUE || v2 >= MAX_VERTEX_VALUE) {
+        sprintf(state->result->reasonMessage, "vertex index too large for vertex buffer");
         return GFXValidatorInvalidArguments;
     } else {
         return GFXValidatorErrorNone;
     }
+} 
+
+enum GFXValidatorError gfxValidateTri1(struct GFXValidatorState* state, Gfx* at) {
+    int v0 = _SHIFTR(at->words.w1, 16, 8);
+    int v1 = _SHIFTR(at->words.w1, 8, 8);
+    int v2 = _SHIFTR(at->words.w1, 0, 8);
+
+#ifdef F3DEX_GBI_2
+    v0 = _SHIFTR(at->words.w0, 16, 8);
+    v1 = _SHIFTR(at->words.w0, 8, 8);
+    v2 = _SHIFTR(at->words.w0, 0, 8);
+#else
+    v0 = _SHIFTR(at->words.w1, 16, 8);
+    v1 = _SHIFTR(at->words.w1, 8, 8);
+    v2 = _SHIFTR(at->words.w1, 0, 8);
+    flag = _SHIFTR(at->words.w1, 24, 8);
+#endif
+
+    return gfxCheckTriangle(state, v0, v1, v2);
 }
 
 enum GFXValidatorError gfxValidateTri2(struct GFXValidatorState* state, Gfx* at) {
+    enum GFXValidatorError result = gfxCheckTriangle(
+        state, 
+        _SHIFTR(at->words.w0, 16, 8), 
+        _SHIFTR(at->words.w0, 8, 8), 
+        _SHIFTR(at->words.w0, 0, 8)
+    );
+
+    if (result != GFXValidatorErrorNone) {
+        return result;
+    }
+
+    result = gfxCheckTriangle(
+        state, 
+        _SHIFTR(at->words.w1, 16, 8), 
+        _SHIFTR(at->words.w1, 8, 8), 
+        _SHIFTR(at->words.w1, 0, 8)
+    );
+
+    if (result != GFXValidatorErrorNone) {
+        return result;
+    }
+
     return GFXValidatorErrorNone;
 }
 
 enum GFXValidatorError gfxValidateCullDL(struct GFXValidatorState* state, Gfx* at) {
-    // TODO handle G_SPRITE2D_SCALEFLIP in sprite mode
-    u8 v0 = at->words.w0 & 0xFFFFFF;
-    u8 v1 = at->words.w1;
-
-    if ((v1 - 40) >= v0) {
-        return GFXValidatorInvalidArguments;
-    } else {
-        return GFXValidatorErrorNone;
-    }
+    return GFXValidatorErrorNone;
 }
 
 enum GFXValidatorError gfxValidatePopMtx(struct GFXValidatorState* state, Gfx* at) {
@@ -302,6 +364,7 @@ enum GFXValidatorError gfxValidatePopMtx(struct GFXValidatorState* state, Gfx* a
 #endif
 
     if (state->matrixStackSize < popCount) {
+        sprintf(state->result->reasonMessage, "matrix stack underflow");
         return GFXValidatorStackUnderflow;
 #ifndef F3DEX_GBI_2
     } else if (at->words.w1 != G_MTX_MODELVIEW) {
@@ -322,12 +385,14 @@ enum GFXValidatorError gfxValidateMoveWord(struct GFXValidatorState* state, Gfx*
     switch (index) {
         case G_MW_SEGMENT:
             if (offset > GFX_MAX_SEGMENTS * 4 || offset < 0) {
+                sprintf(state->result->reasonMessage, "segment should be in the range [0, 15] got %d", offset >> 2);
                 return GFXValidatorInvalidArguments;
             } else if (!gfxIsValidSegmentAddress(data)) {
+                sprintf(state->result->reasonMessage, "invalid ram address for segment %08x", data);
                 return GFXValidatorInvalidArguments;
             }
 
-            state->segments[offset/4] = data;
+            state->segments[offset>>2] = data;
             break;
         case G_MW_CLIP:
             break;
@@ -367,25 +432,28 @@ enum GFXValidatorError gfxValidateList(struct GFXValidatorState* state, Gfx* gfx
     }
 
     int active = 1;
+    int stackLocation = state->result->gfxStackSize-1;
 
     while (active) {
         int commandType = _SHIFTR(gfx->words.w0, 24, 8);
 
         if (commandType < 0 || commandType >= GFX_MAX_COMMAND_LEN) {
-            return GFXValidatorInvalidCommand;
+            result = GFXValidatorInvalidCommand;
+            goto error;
         }
 
         CommandValidator validator = gfxCommandValidators[commandType];
 
         if (!validator) {
-            return GFXValidatorInvalidCommand;
+            sprintf(state->result->reasonMessage, "unrecongized command with id %08x", commandType);
+            result = GFXValidatorInvalidCommand;
+            goto error;
         }
 
         result = validator(state, gfx);
 
         if (result != GFXValidatorErrorNone) {
-            state->result->gfxStack[state->result->gfxStackSize-1] = gfx;
-            return result;
+            goto error;
         }
 
         switch (commandType) {
@@ -398,7 +466,7 @@ enum GFXValidatorError gfxValidateList(struct GFXValidatorState* state, Gfx* gfx
                     result = gfxTranslateAddress(state, gfx->dma.addr, &next);
 
                     if (result != GFXValidatorErrorNone) {
-                        return result;
+                        goto error;
                     }
 
                     next = PHYS_TO_K0(next);
@@ -406,7 +474,12 @@ enum GFXValidatorError gfxValidateList(struct GFXValidatorState* state, Gfx* gfx
                     if (gfx->dma.par == G_DL_NOPUSH) {
                         gfx = (Gfx*)next;
                     } else {
-                        gfxValidateList(state, (Gfx*)next, (Gfx*)gfx->dma.addr);
+                        result = gfxValidateList(state, (Gfx*)next, (Gfx*)gfx->dma.addr);
+
+                        if (result != GFXValidatorErrorNone) {
+                            goto error;
+                        }
+
                         ++gfx;
                     }
                 }
@@ -419,6 +492,9 @@ enum GFXValidatorError gfxValidateList(struct GFXValidatorState* state, Gfx* gfx
 
     gfxPop(state);
     return GFXValidatorErrorNone;
+error:
+    state->result->gfxStack[stackLocation] = gfx;
+    return result;
 }
 
 enum GFXValidatorError gfxValidate(OSTask* task, int maxGfxCount, struct GFXValidationResult* validateResult) {

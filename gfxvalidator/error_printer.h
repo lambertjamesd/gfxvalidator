@@ -3,6 +3,4 @@
 
 #include "validator.h"
 
-void gfxGenerateReadableMessage(struct GFXValidationResult* result, gfxPrinter printer);
-
 #endif

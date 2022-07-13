@@ -7,14 +7,6 @@
 
 typedef unsigned (*ErrorPrinter)(struct GFXValidationResult* result, char* output, unsigned maxOutputLen);
 
-unsigned gfxUnknownError(struct GFXValidationResult* result, char* output, unsigned maxOutputLen) {
-    return sprintf(output, "unknown error %d", result->reason);
-}
-
-ErrorPrinter gfxErrorPrinters[GFXValidatorErrorCount] = {
-
-};
-
 void gfxGenerateReadableMessage(struct GFXValidationResult* result, gfxPrinter printer) {
     char tmpBuffer[TMP_BUFFER_SIZE];
 
@@ -33,18 +25,12 @@ void gfxGenerateReadableMessage(struct GFXValidationResult* result, gfxPrinter p
             curr[currOffset++] = '\n';
         }
 
+        curr[currOffset] = '\0';
+
         printer(tmpBuffer, currOffset);
     }
 
-    ErrorPrinter errorPrinter = 0;
-
-    if (result->reason < GFXValidatorErrorCount) {
-        errorPrinter = gfxErrorPrinters[result->reason];
+    if (result->reasonMessage[0]) {
+        printer(result->reasonMessage, strlen(result->reasonMessage));
     }
-
-    if (!errorPrinter) {
-        errorPrinter = gfxUnknownError;
-    }
-
-    printer(tmpBuffer, errorPrinter(result, tmpBuffer, TMP_BUFFER_SIZE));
 }

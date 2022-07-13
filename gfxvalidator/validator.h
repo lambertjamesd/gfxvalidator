@@ -13,6 +13,8 @@
 #define GFX_INITIALIZED_PMTX    (1 << 0)
 #define GFX_INITIALIZED_MMTX    (1 << 1)
 
+#define GFX_MAX_REASON_LENGTH   96
+
 enum GFXValidatorError {
     GFXValidatorErrorNone,
     GFXValidatorStackOverflow,
@@ -30,7 +32,7 @@ struct GFXValidationResult {
     Gfx* gfxStack[GFX_MAX_GFX_STACK];
     char gfxStackSize;
     enum GFXValidatorError reason;
-    unsigned reasonParam0;
+    char reasonMessage[GFX_MAX_REASON_LENGTH];
 };
 
 struct GFXValidatorState {
@@ -43,5 +45,6 @@ struct GFXValidatorState {
 typedef void (*gfxPrinter)(char* output, unsigned outputLength);
 
 enum GFXValidatorError gfxValidate(OSTask* task, int maxGfxCount, struct GFXValidationResult* result);
+void gfxGenerateReadableMessage(struct GFXValidationResult* result, gfxPrinter printer);
 
 #endif
