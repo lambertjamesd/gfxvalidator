@@ -4,6 +4,8 @@
 
 #include <ultra64.h>
 
+#define GFX_MAX_COMMAND_LEN     256
+
 #define GFX_MAX_SEGMENTS        16
 #define GFX_MAX_GFX_STACK       10
 #define GFX_MAX_MATRIX_STACK    10
