@@ -266,6 +266,11 @@ enum GFXValidatorError gfxValidateVertex(struct GFXValidatorState* state, Gfx* a
     }
 #endif
 
+    if (vtxCount == 0) {
+        sprintf(state->result->reasonMessage, "must include at least one vertex");
+        return GFXValidatorInvalidArguments;
+    }
+
     if (v0 + vtxCount > VERTEX_BUFFER_SIZE) {
         sprintf(state->result->reasonMessage, "vertex buffer overflow v0: %d n: %d", v0, vtxCount);
         return GFXValidatorInvalidArguments;
